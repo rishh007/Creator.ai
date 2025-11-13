@@ -244,7 +244,8 @@ def cached_generate(brief: str):
 ```
 .
 ├── agent_fastapi.py      # FastAPI backend with streaming
-├── frontend.html         # Web UI for content generation
+├── index.html         # Web UI for content generation
+├── style.css         # css file 
 ├── requirements.txt      # Python dependencies
 └── README.md            # This file
 ```
