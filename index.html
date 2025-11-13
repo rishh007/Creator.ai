@@ -53,7 +53,11 @@
                     <div class="form-group">
                         <label>Web Search results (0 to disable)</label>
                         <input type="number" id="webSearch" value="0" min="0" max="10">
+                    </div>
 
+                    <div class="form-group">
+                        <label>Author Email (optional)</label>
+                        <input type="email" id="authorEmail" placeholder="your-email@example.com">
                     </div>
 
                     <button type="submit" class="btn btn-primary" id="generateBtn">
@@ -100,9 +104,14 @@
                     <div class="markdown-content" id="contentOutput">
                         <p style="color: #999;">Generated content will appear here...</p>
                     </div>
-                    <button class="btn btn-secondary" onclick="downloadDocx()" style="margin-top: 20px;">
-                Download as .docx
-            </button>
+                    <div style="margin-top: 20px;">
+                        <button class="btn btn-secondary" onclick="downloadDocx()">
+                            Download as .docx
+                        </button>
+                        <button class="btn btn-secondary" onclick="sendEmail()" style="margin-left: 10px;">
+                            📧 Send via Email
+                        </button>
+                    </div>
                 </div>
 
                 <div id="tab-review" class="tab-content">
@@ -198,7 +207,8 @@
             const brief = document.getElementById('brief').value;
             const audience = document.getElementById('audience').value;
             const tone = document.getElementById('tone').value;
-            const webSearch = document.getElementById('webSearch').valueAsNumber || 0; 
+            const webSearch = document.getElementById('webSearch').valueAsNumber || 0;
+            const authorEmail = document.getElementById('authorEmail').value; 
 
             if (!brief) {
                 alert('Please enter a project brief');
@@ -221,7 +231,8 @@
                         audience: audience,
                         tone: tone,
                         keywords: keywords,
-                        web_search: webSearch
+                        web_search: webSearch,
+                        author_email: authorEmail
 
                         // The key is web_search with an underscore to match your Python ContentRequest model.
                     })
@@ -307,6 +318,8 @@
                 case 'writing':
                     if (content !== 'Writing content...') {
                         document.getElementById('contentOutput').innerHTML = marked.parse(content);
+                        // Store the original markdown content for email
+                        window.lastGeneratedContent = content;
                     }
                     break;
                 
@@ -350,6 +363,65 @@
 
     function toggleFullscreen(img) {
         img.classList.toggle('fullscreen');
+    }
+
+    // Email sending function
+    async function sendEmail() {
+        const email = document.getElementById('authorEmail').value;
+        const contentElement = document.getElementById('contentOutput');
+        const projectBrief = document.getElementById('brief').value;
+        
+        if (!email) {
+            alert('Please enter your email address first!');
+            return;
+        }
+        
+        // Get the HTML content (same as download button)
+        const contentHtml = contentElement.innerHTML;
+        
+        if (!contentHtml || contentHtml.includes('Generated content will appear here')) {
+            alert('Please generate content first!');
+            return;
+        }
+        
+        try {
+            // Create the DOCX file using the same method as download button
+            const blob = htmlDocx.asBlob(contentHtml);
+            
+            // Convert blob to base64
+            const reader = new FileReader();
+            reader.onload = async function() {
+                const base64Data = reader.result.split(',')[1]; // Remove data:application/... prefix
+                
+                // Send the base64 DOCX data to backend
+                const response = await fetch(`${API_BASE}/api/send-email`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: email,
+                        docx_base64: base64Data,  // Send the exact same DOCX as download
+                        project_brief: projectBrief
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert('✅ Email sent successfully!');
+                } else {
+                    alert(`❌ Failed to send email: ${result.detail}`);
+                }
+            };
+            
+            reader.onerror = function() {
+                alert('❌ Error creating document for email');
+            };
+            
+            reader.readAsDataURL(blob);
+            
+        } catch (error) {
+            alert(`❌ Error sending email: ${error.message}`);
+        }
     }
     
     </script>

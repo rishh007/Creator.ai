@@ -23,6 +23,11 @@ import os
 import json
 import re
 import asyncio
+import io
+import base64
+import resend
+from docx import Document
+from bs4 import BeautifulSoup
 from typing import TypedDict, List, Dict, Any, Optional
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -85,6 +90,7 @@ class ContentRequest(BaseModel):
     keywords: List[str] = Field(default=[], description="Keywords to include")
     # 2. ADD WEB_SEARCH TO REQUEST MODEL
     web_search: int = Field(default=0, description="Number of web search results to include (0 to disable)")
+    author_email: Optional[str] = Field(default=None, description="Author email for sending content")
 
 class ContentResponse(BaseModel):
     status: str
@@ -295,6 +301,201 @@ async def finalizer_async(state: ContentState) -> ContentState:
 
 
 # -------------------------------
+# Email Functionality
+# -------------------------------
+def create_docx_from_html(html_content: str, title: str = "Generated Content") -> io.BytesIO:
+    """Create a DOCX file from HTML content (same as frontend download)"""
+    from bs4 import BeautifulSoup
+    
+    doc = Document()
+    doc.add_heading(title, 0)
+    
+    # Parse HTML content
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Process each element
+    for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ul', 'ol', 'li']):
+        if element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            level = int(element.name[1])
+            doc.add_heading(element.get_text().strip(), level=level)
+        elif element.name == 'p':
+            text = element.get_text().strip()
+            if text:
+                p = doc.add_paragraph()
+                # Handle bold text
+                for child in element.children:
+                    if hasattr(child, 'name'):
+                        if child.name == 'strong' or child.name == 'b':
+                            p.add_run(child.get_text()).bold = True
+                        else:
+                            p.add_run(child.get_text())
+                    else:
+                        p.add_run(str(child))
+        elif element.name == 'ul':
+            for li in element.find_all('li'):
+                doc.add_paragraph(li.get_text().strip(), style='List Bullet')
+        elif element.name == 'ol':
+            for li in element.find_all('li'):
+                doc.add_paragraph(li.get_text().strip(), style='List Number')
+    
+    # Save to BytesIO
+    docx_buffer = io.BytesIO()
+    doc.save(docx_buffer)
+    docx_buffer.seek(0)
+    return docx_buffer
+
+
+def create_docx_from_content(content: str, title: str = "Generated Content") -> io.BytesIO:
+    """Create a DOCX file from markdown content with better formatting"""
+    doc = Document()
+    doc.add_heading(title, 0)
+    
+    # Enhanced markdown to docx conversion
+    lines = content.split('\n')
+    in_list = False
+    
+    for line in lines:
+        line = line.strip()
+        
+        if not line:  # Empty line
+            if in_list:
+                in_list = False
+            continue
+            
+        # Headers
+        if line.startswith('# '):
+            if in_list: in_list = False
+            doc.add_heading(line[2:], level=1)
+        elif line.startswith('## '):
+            if in_list: in_list = False
+            doc.add_heading(line[3:], level=2)
+        elif line.startswith('### '):
+            if in_list: in_list = False
+            doc.add_heading(line[4:], level=3)
+        elif line.startswith('#### '):
+            if in_list: in_list = False
+            doc.add_heading(line[5:], level=4)
+        
+        # Lists
+        elif line.startswith('- ') or line.startswith('* '):
+            doc.add_paragraph(line[2:], style='List Bullet')
+            in_list = True
+        elif line.startswith(('1. ', '2. ', '3. ', '4. ', '5. ', '6. ', '7. ', '8. ', '9. ')):
+            doc.add_paragraph(line[3:], style='List Number')
+            in_list = True
+        
+        # Bold text (simple **text** conversion)
+        elif '**' in line:
+            if in_list: in_list = False
+            p = doc.add_paragraph()
+            parts = line.split('**')
+            for i, part in enumerate(parts):
+                if i % 2 == 0:
+                    p.add_run(part)
+                else:
+                    p.add_run(part).bold = True
+        
+        # Regular paragraph
+        elif line:
+            if in_list: in_list = False
+            doc.add_paragraph(line)
+    
+    # Save to BytesIO
+    docx_buffer = io.BytesIO()
+    doc.save(docx_buffer)
+    docx_buffer.seek(0)
+    return docx_buffer
+
+
+async def send_content_email_with_docx(recipient_email: str, docx_base64: str, project_brief: str):
+    """Send generated content via email with pre-generated DOCX attachment"""
+    # Get Resend API key from environment
+    resend_api_key = os.getenv("RESEND_API_KEY")
+    
+    if not resend_api_key:
+        raise Exception("RESEND_API_KEY not set. Get free API key from https://resend.com")
+    
+    # Set API key
+    resend.api_key = resend_api_key
+    
+    filename = f"{project_brief[:30].replace(' ', '_')}_content.docx"
+    
+    # Send email using Resend with the exact DOCX from frontend
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        await loop.run_in_executor(
+            executor,
+            _send_resend_email,
+            recipient_email, project_brief, docx_base64, filename
+        )
+
+
+def _send_resend_email(recipient_email, project_brief, docx_base64, filename):
+    """Send email using Resend API"""
+    resend.Emails.send({
+        "from": "Creator.ai <noreply@resend.dev>",  # Free domain provided by Resend
+        "to": recipient_email,
+        "subject": f"🚀 Your AI-Generated Content is Ready! - {project_brief[:40]}...",
+        "html": f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f8f9fa;">
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px; text-align: center; margin-bottom: 20px;">
+                <h1 style="color: white; margin: 0; font-size: 28px;">🤖 Creator.ai</h1>
+                <p style="color: #e8f4fd; margin: 10px 0 0 0; font-size: 16px;">Your AI Content Creation Team</p>
+            </div>
+            
+            <div style="background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                <h2 style="color: #333; margin-top: 0;">🎉 Your Content is Ready!</h2>
+                
+                <p style="color: #555; font-size: 16px; line-height: 1.6;">Hi there! 👋</p>
+                
+                <p style="color: #555; font-size: 16px; line-height: 1.6;">
+                    Your AI-generated content has been successfully created by our multi-agent team! 
+                    📝 Our Strategist, Writer, and Reviewer have worked together to craft high-quality content just for you.
+                </p>
+                
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #667eea;">
+                    <p style="margin: 0; color: #333;"><strong>📋 Project Brief:</strong></p>
+                    <p style="margin: 5px 0 0 0; color: #666; font-style: italic;">{project_brief}</p>
+                </div>
+                
+                <p style="color: #555; font-size: 16px; line-height: 1.6;">
+                    📎 Please find your professionally formatted content attached as a DOCX file, 
+                    ready for immediate use!
+                </p>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                    <div style="background: #e8f5e8; padding: 15px; border-radius: 8px; display: inline-block;">
+                        <p style="margin: 0; color: #2d5a2d; font-weight: bold;">✨ What's Included:</p>
+                        <p style="margin: 5px 0 0 0; color: #2d5a2d;">📊 Strategic Planning • ✍️ Professional Writing • 🔍 Quality Review</p>
+                    </div>
+                </div>
+                
+                <hr style="border: none; height: 1px; background: #eee; margin: 30px 0;">
+                
+                <p style="color: #555; font-size: 14px; line-height: 1.6;">
+                    💡 <strong>Tip:</strong> Love the content? Share Creator.ai with your colleagues and friends!
+                </p>
+                
+                <p style="color: #555; font-size: 16px; line-height: 1.6; margin-bottom: 0;">
+                    Best regards,<br>
+                    🚀 <strong>The Creator.ai Team</strong><br>
+                    <span style="color: #888; font-size: 14px;">Powered by LangGraph & Ollama</span>
+                </p>
+            </div>
+            
+            <div style="text-align: center; margin-top: 20px; color: #888; font-size: 12px;">
+                <p>🤖 This email was generated and sent by Creator.ai</p>
+            </div>
+        </div>
+        """,
+        "attachments": [{
+            "filename": filename,
+            "content": docx_base64
+        }]
+    })
+
+
+# -------------------------------
 # Pipeline Runner
 # -------------------------------
 async def run_content_pipeline_async(input_data: dict) -> dict:
@@ -443,6 +644,26 @@ async def list_models():
             "mistral:7b-instruct"
         ]
     }
+
+@app.post("/api/send-email")
+async def send_email_endpoint(request: dict):
+    """
+    Send generated content via email
+    """
+    try:
+        recipient_email = request.get("email")
+        docx_base64 = request.get("docx_base64")  # Pre-generated DOCX from frontend
+        project_brief = request.get("project_brief", "Generated Content")
+        
+        if not recipient_email or not docx_base64:
+            raise HTTPException(status_code=400, detail="Email and DOCX content are required")
+        
+        await send_content_email_with_docx(recipient_email, docx_base64, project_brief)
+        
+        return {"status": "success", "message": "Email sent successfully!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+
 
 @app.get("/api/download-image")
 async def download_image(url: str, request: ContentRequest):
