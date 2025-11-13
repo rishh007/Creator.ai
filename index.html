@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Content Generator</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://unpkg.com/html-to-docx@1.8.0/dist/html-to-docx.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html-docx-js@0.3.1/dist/html-docx.min.js"></script>
     <link rel="stylesheet" href=style.css>
 </head>
 <body>
@@ -153,9 +153,8 @@
             .replace(/[^a-z0-9]/gi, '_').toLowerCase()
             .substring(0, 30);
 
-        htmlToDocx.asBlob(contentHtml).then(blob => {
-            saveAs(blob, `${filename}.docx`);
-        });
+        const blob = htmlDocx.asBlob(contentHtml);
+        saveAs(blob, `${filename}.docx`);
     }
 
     // Helper function (needed by html-to-docx)
