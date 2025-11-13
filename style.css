@@ -5,8 +5,8 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #091b6e 0%, #8040c0 100%);
             min-height: 100vh;
             padding: 20px;
         }
@@ -23,7 +23,7 @@
         }
 
         h1 {
-            font-size: 1.5rem;
+            font-size: 2.5rem;
             margin-bottom: 10px;
         }
 
@@ -405,4 +405,20 @@
 
 .search-result-card h4 a:hover {
     text-decoration: underline;
+}
+
+/* --- Styles for Images in Generated Content --- */
+
+.markdown-content img {
+    /* This is the most important rule: */
+    max-width: 100%;
+
+    /* These are optional, but will make it look nice: */
+    height: auto;
+    border-radius: 8px; /* Matches your card style */
+    margin: 1.5rem 0; /* Adds space above and below the image */
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1); /* Adds a nice lift */
+    display: block; /* Helps with centering if you add margin: auto */
+    margin-left: auto;
+    margin-right: auto;
 }
