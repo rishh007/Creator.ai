@@ -358,8 +358,8 @@
     position: absolute;
     bottom: 5px;
     right: 5px;
-    background: rgba(0, 0, 0, 0.6);
-    color: white;
+    background: rgba(41, 7, 71, 0.6);
+    color: rgb(160, 43, 43);
     padding: 4px 8px;
     border-radius: 4px;
     font-size: 10px;
@@ -375,12 +375,12 @@
 /* --- New Button Style --- */
 
 .btn-secondary {
-    background: #6c757d;
+    background: #3b7eb9;
     color: white;
 }
 
 .btn-secondary:hover {
-    background: #5a6268;
+    background: #0f411f;
 }
 
 /* --- Existing Search Result Card --- */
