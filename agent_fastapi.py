@@ -5,9 +5,10 @@ FastAPI + LangGraph Content Creation Agent with Streaming Support
 """
 
 import dotenv
-dotenv.load_dotenv()    
+dotenv.load_dotenv()  # very important.
 
 import httpx
+import base64
 import os
 import json
 import re
@@ -16,15 +17,13 @@ from typing import TypedDict, List, Dict, Any, Optional
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from langchain_ollama import OllamaLLM
-from langchain_tavily import TavilySearch 
-from fastapi import Request
-import urllib.parse
-
+from langchain_tavily import TavilySearch  # 1. IMPORT TAVILY
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 
 # -------------------------------
 # FastAPI App Setup
@@ -121,21 +120,18 @@ class ContentState(TypedDict, total=False):
     reviewer_comments: str
     final_content: str
 
-
 # -------------------------------
 # Agent Nodes
 # -------------------------------
+
 async def web_search_async(state: ContentState) -> ContentState:
     """Search the web for the project brief if requested."""
     max_results = state.get("web_search", 0)
-    
+
     if max_results == 0:
-        print("Skipping web search.")
         state["search_results"] = None
         return state
-        
-    print(f"Conducting web search for: {state.get('project_brief')}")
-    
+
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
         search_tool = TavilySearch(max_results=max_results, include_images=True)
@@ -146,11 +142,12 @@ async def web_search_async(state: ContentState) -> ContentState:
                 state.get("project_brief")
             )
             state["search_results"] = results
-            print(f"Found search results with {len(results.get('results', []))} items.")
         except Exception as e:
-            print(f"Error during web search: {e}")
+            # On error, leave search_results as None but continue pipeline
             state["search_results"] = None
-            
+            # Optionally log or attach error info in state if desired
+            state["search_error"] = str(e)
+
     return state
 
 
@@ -160,12 +157,12 @@ async def content_strategist_async(state: ContentState) -> ContentState:
     audience = state.get("audience", "general")
     tone = state.get("tone", "informative")
     keywords = ", ".join(state.get("keywords", []))
-    
+
     search_results = state.get("search_results")
     search_context = "No web search results."
-    if search_results:
+    if search_results and isinstance(search_results, dict):
         search_context = "## Web Search Context:\n"
-        for i, result in enumerate(search_results.get('results', [])):
+        for i, result in enumerate(search_results.get("results", [])):
             search_context += f"Source {i+1} ({result.get('url')}):\n{result.get('content')}\n\n"
 
     prompt = f"""You are a content strategist. Use the following web search context to inform your strategy.
@@ -199,7 +196,7 @@ Be concise."""
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
         response = await loop.run_in_executor(executor, llm.invoke, prompt)
-    
+
     state["strategy"] = response.strip()
     return state
 
@@ -212,15 +209,24 @@ async def content_writer_async(state: ContentState) -> ContentState:
 
     search_results = state.get("search_results")
     search_context = "No web search results."
-    if search_results:
+    if search_results and isinstance(search_results, dict):
         search_context = "## Web Search Context (for your reference):\n"
-        for i, result in enumerate(search_results.get('results', [])):
-            search_context += f"Source {i+1} ({result.get('url')}):\n{result.get('content')}\n"
-            if result.get('images'):
-                search_context += f"Images for Source {i+1}: {', '.join(result.get('images'))}\n\n"
 
-    prompt = f"""You are a content writer. Write a complete article in markdown format. 
-Follow this strategy and use the provided search context.
+        # Add Text results
+        text_results = search_results.get("results", [])
+        if text_results:
+            for i, result in enumerate(text_results):
+                search_context += f"Source {i+1} ({result.get('url')}):\n{result.get('content')}\n\n"
+
+        # Add Image results
+        image_results = search_results.get("images", [])
+        if image_results:
+            search_context += "## Available Images:\n"
+            for img_url in image_results:
+                search_context += f"- {img_url}\n"
+
+    prompt = f"""You are an expert content writer. Your task is to write a complete article in markdown format.
+You MUST follow the strategy and use the provided search context.
 
 {strategy}
 
@@ -228,20 +234,21 @@ Follow this strategy and use the provided search context.
 {search_context}
 ---
 
+**CRITICAL INSTRUCTIONS:**
+1. Write the complete article based on the strategy.
+2. You MUST embed relevant images from the 'Available Images' list directly into the article where they make sense.
+3. Use this exact Markdown format: ![A descriptive alt text](image_url)
+4. Do not just list the image URLs at the end. They must be part of the article's flow.
+
 **Tone:** {tone}
 **Keywords:** {keywords}
 
-**Instructions:**
-- Write the complete article with clear headings (##, ###), paragraphs, and bullet points.
-- **IMPORTANT:** Where relevant, include images from the 'Web Search Context' using Markdown format: `![alt text](image_url)`
-- Be comprehensive and informative.
-
-Start writing now:"""
+Start writing the complete article now:"""
 
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
         response = await loop.run_in_executor(executor, llm_writer.invoke, prompt)
-    
+
     state["draft_content"] = response.strip()
     return state
 
@@ -296,13 +303,14 @@ async def finalizer_async(state: ContentState) -> ContentState:
 async def run_content_pipeline_async(input_data: dict) -> dict:
     """Run the full content creation pipeline"""
     state = ContentState(**input_data)
-    
+
+    # Add search as first step in pipeline
     state = await web_search_async(state)
     state = await content_strategist_async(state)
     state = await content_writer_async(state)
     state = await content_reviewer_async(state)
     state = await finalizer_async(state)
-    
+
     return state
 
 
@@ -328,7 +336,7 @@ async def root():
 async def health_check():
     """Check if Ollama is running"""
     try:
-        test_response = llm.invoke("Hi")
+        llm.invoke("Hi")
         return {"status": "healthy", "model": LLM_MODEL, "ollama": "connected"}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Ollama not available: {str(e)}")
@@ -345,9 +353,9 @@ async def generate_content(request: ContentRequest):
             "keywords": request.keywords,
             "web_search": request.web_search
         }
-        
+
         result = await run_content_pipeline_async(input_data)
-        
+
         return ContentResponse(
             status="completed" if not result.get("needs_escalation") else "escalated",
             strategy=result.get("strategy"),
@@ -374,24 +382,24 @@ async def stream_content(request: ContentRequest):
                 "keywords": request.keywords,
                 "web_search": request.web_search
             }
-            
+
             state = ContentState(**input_data)
-            
-            # Stage 0: Web Search
+
+            # Stage 0: Web search
             yield f"data: {json.dumps({'stage': 'search', 'content': 'Searching the web...', 'progress': 10})}\n\n"
             state = await web_search_async(state)
             yield f"data: {json.dumps({'stage': 'search', 'content': state.get('search_results'), 'progress': 10})}\n\n"
-            
+
             # Stage 1: Strategy
             yield f"data: {json.dumps({'stage': 'strategy', 'content': 'Generating strategy...', 'progress': 25})}\n\n"
             state = await content_strategist_async(state)
             yield f"data: {json.dumps({'stage': 'strategy', 'content': state.get('strategy'), 'progress': 25})}\n\n"
-            
+
             # Stage 2: Writing
             yield f"data: {json.dumps({'stage': 'writing', 'content': 'Writing content...', 'progress': 50})}\n\n"
             state = await content_writer_async(state)
             yield f"data: {json.dumps({'stage': 'writing', 'content': state.get('draft_content'), 'progress': 50})}\n\n"
-            
+
             # Stage 3: Review
             yield f"data: {json.dumps({'stage': 'review', 'content': 'Reviewing content...', 'progress': 75})}\n\n"
             state = await content_reviewer_async(state)
@@ -400,7 +408,7 @@ async def stream_content(request: ContentRequest):
                 'comments': state.get('reviewer_comments')
             }
             yield f"data: {json.dumps({'stage': 'review', 'content': json.dumps(review_data), 'progress': 75})}\n\n"
-            
+
             # Stage 4: Finalize
             state = await finalizer_async(state)
             final_data = {
@@ -409,10 +417,10 @@ async def stream_content(request: ContentRequest):
                 'needs_escalation': state.get('needs_escalation')
             }
             yield f"data: {json.dumps({'stage': 'complete', 'content': json.dumps(final_data), 'progress': 100})}\n\n"
-            
+
         except Exception as e:
             yield f"data: {json.dumps({'stage': 'error', 'content': str(e), 'progress': 0})}\n\n"
-    
+
     return StreamingResponse(generate_stream(), media_type="text/event-stream")
 
 
@@ -432,26 +440,28 @@ async def list_models():
 
 
 @app.get("/api/download-image")
-async def download_image(url: str):
-    """Proxies an image download to bypass CORS"""
+async def download_image(url: str, request: Request):
+    """
+    Proxies an image download to bypass CORS.
+    """
     if not url:
         raise HTTPException(status_code=400, detail="No URL provided")
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers={"User-Agent": "FastAPI-Proxy"})
-            
+            response = await client.stream("GET", url, headers={"User-Agent": request.headers.get("user-agent", "FastAPI-Proxy")})
+
             if response.status_code != 200:
                 raise HTTPException(status_code=response.status_code, detail="Failed to fetch image")
-            
+
             content_type = response.headers.get("content-type", "application/octet-stream")
             if not content_type.startswith("image/"):
                 raise HTTPException(status_code=400, detail="URL does not point to a valid image")
 
             filename = url.split('/')[-1].split('?')[0] or "image.jpg"
-            
+
             return StreamingResponse(
-                iter([response.content]), 
+                response.aiter_bytes(),
                 media_type=content_type,
                 headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
             )
