@@ -2,23 +2,12 @@
 agent_fastapi.py
 -------------------
 FastAPI + LangGraph Content Creation Agent with Streaming Support
-
-Features:
-- REST API endpoints
-- Real-time streaming responses
-- Markdown formatted output
-- CORS enabled for frontend integration
-- Async processing
-- Tavily Web Search with Image Support
-
-Run: uvicorn agent_fastapi:app --reload --host 0.0.0.0 --port 8000
 """
 
 import dotenv
-dotenv.load_dotenv()    # very important. 
+dotenv.load_dotenv()    
 
 import httpx
-
 import os
 import json
 import re
@@ -29,10 +18,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from langchain_ollama import OllamaLLM
-from langchain_tavily import TavilySearch # 1. IMPORT TAVILY
+from langchain_tavily import TavilySearch 
+from fastapi import Request
+import urllib.parse
+
 
 # -------------------------------
 # FastAPI App Setup
@@ -46,17 +38,24 @@ app = FastAPI(
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # -------------------------------
+# Environment Variables
+# -------------------------------
+LLM_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+BLOGGER_BLOG_ID = os.getenv("BLOGGER_BLOG_ID")
+
+# -------------------------------
 # LLM Setup
 # -------------------------------
-LLM_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
-
 llm = OllamaLLM(
     model=LLM_MODEL,
     temperature=0.1,
@@ -70,20 +69,19 @@ llm_writer = OllamaLLM(
     model=LLM_MODEL,
     temperature=0.2,
     num_predict=1024,
-    num_ctx=4096,  # Increased context for search results
+    num_ctx=4096,
     top_p=0.9,
     top_k=40
 )
 
 # -------------------------------
-# Pydantic Models (Request/Response)
+# Pydantic Models
 # -------------------------------
 class ContentRequest(BaseModel):
     project_brief: str = Field(..., description="Brief description of the content project")
     audience: str = Field(default="general", description="Target audience")
     tone: str = Field(default="informative", description="Content tone")
     keywords: List[str] = Field(default=[], description="Keywords to include")
-    # 2. ADD WEB_SEARCH TO REQUEST MODEL
     web_search: int = Field(default=0, description="Number of web search results to include (0 to disable)")
 
 class ContentResponse(BaseModel):
@@ -101,6 +99,11 @@ class StreamUpdate(BaseModel):
     content: str
     progress: int
 
+class BloggerPublishRequest(BaseModel):
+    access_token: str
+    title: str
+    content: str
+
 # -------------------------------
 # State Schema
 # -------------------------------
@@ -109,9 +112,8 @@ class ContentState(TypedDict, total=False):
     audience: str
     tone: str
     keywords: List[str]
-    # 3. ADD WEB_SEARCH KEYS TO STATE
     web_search: int
-    search_results: Optional[List[Dict[str, Any]]]
+    search_results: Optional[Dict[str, Any]]
     strategy: str
     draft_content: str
     quality_score: float
@@ -121,13 +123,10 @@ class ContentState(TypedDict, total=False):
 
 
 # -------------------------------
-# Agent Nodes (Async versions)
+# Agent Nodes
 # -------------------------------
-
-# 4. ADD NEW WEB_SEARCH_ASYNC NODE
 async def web_search_async(state: ContentState) -> ContentState:
     """Search the web for the project brief if requested."""
-    
     max_results = state.get("web_search", 0)
     
     if max_results == 0:
@@ -139,7 +138,6 @@ async def web_search_async(state: ContentState) -> ContentState:
     
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
-        # Instantiate TavilySearch, including images
         search_tool = TavilySearch(max_results=max_results, include_images=True)
         try:
             results = await loop.run_in_executor(
@@ -148,7 +146,7 @@ async def web_search_async(state: ContentState) -> ContentState:
                 state.get("project_brief")
             )
             state["search_results"] = results
-            print(f"Found {len(results)} search results.")
+            print(f"Found search results with {len(results.get('results', []))} items.")
         except Exception as e:
             print(f"Error during web search: {e}")
             state["search_results"] = None
@@ -163,12 +161,11 @@ async def content_strategist_async(state: ContentState) -> ContentState:
     tone = state.get("tone", "informative")
     keywords = ", ".join(state.get("keywords", []))
     
-    # 5. UPDATE NODE TO USE SEARCH RESULTS
     search_results = state.get("search_results")
     search_context = "No web search results."
     if search_results:
         search_context = "## Web Search Context:\n"
-        for i, result in enumerate(search_results.get('results', [])): # bug 
+        for i, result in enumerate(search_results.get('results', [])):
             search_context += f"Source {i+1} ({result.get('url')}):\n{result.get('content')}\n\n"
 
     prompt = f"""You are a content strategist. Use the following web search context to inform your strategy.
@@ -213,7 +210,6 @@ async def content_writer_async(state: ContentState) -> ContentState:
     tone = state.get("tone", "informative")
     keywords = ", ".join(state.get("keywords", []))
 
-    # 6. UPDATE NODE TO USE SEARCH RESULTS AND IMAGES
     search_results = state.get("search_results")
     search_context = "No web search results."
     if search_results:
@@ -221,7 +217,7 @@ async def content_writer_async(state: ContentState) -> ContentState:
         for i, result in enumerate(search_results.get('results', [])):
             search_context += f"Source {i+1} ({result.get('url')}):\n{result.get('content')}\n"
             if result.get('images'):
-                 search_context += f"Images for Source {i+1}: {', '.join(result.get('images'))}\n\n"
+                search_context += f"Images for Source {i+1}: {', '.join(result.get('images'))}\n\n"
 
     prompt = f"""You are a content writer. Write a complete article in markdown format. 
 Follow this strategy and use the provided search context.
@@ -301,7 +297,6 @@ async def run_content_pipeline_async(input_data: dict) -> dict:
     """Run the full content creation pipeline"""
     state = ContentState(**input_data)
     
-    # 7. ADD SEARCH AS FIRST STEP IN PIPELINE
     state = await web_search_async(state)
     state = await content_strategist_async(state)
     state = await content_writer_async(state)
@@ -341,17 +336,13 @@ async def health_check():
 
 @app.post("/api/generate", response_model=ContentResponse)
 async def generate_content(request: ContentRequest):
-    """
-    Generate content (non-streaming)
-    Returns complete result when finished
-    """
+    """Generate content (non-streaming)"""
     try:
         input_data = {
             "project_brief": request.project_brief,
             "audience": request.audience,
             "tone": request.tone,
             "keywords": request.keywords,
-            # 8. PASS WEB_SEARCH PARAM FROM REQUEST
             "web_search": request.web_search
         }
         
@@ -373,10 +364,7 @@ async def generate_content(request: ContentRequest):
 
 @app.post("/api/stream")
 async def stream_content(request: ContentRequest):
-    """
-    Stream content generation in real-time
-    Returns Server-Sent Events (SSE)
-    """
+    """Stream content generation in real-time"""
     async def generate_stream():
         try:
             input_data = {
@@ -384,16 +372,14 @@ async def stream_content(request: ContentRequest):
                 "audience": request.audience,
                 "tone": request.tone,
                 "keywords": request.keywords,
-                # 9. PASS WEB_SEARCH PARAM FROM REQUEST
                 "web_search": request.web_search
             }
             
             state = ContentState(**input_data)
             
-            # 10. ADD "STAGE 0: WEB SEARCH" AND FIX THE BUG
+            # Stage 0: Web Search
             yield f"data: {json.dumps({'stage': 'search', 'content': 'Searching the web...', 'progress': 10})}\n\n"
             state = await web_search_async(state)
-            # THIS IS THE BUG FIX: Send 'search_results', not 'web_search'
             yield f"data: {json.dumps({'stage': 'search', 'content': state.get('search_results'), 'progress': 10})}\n\n"
             
             # Stage 1: Strategy
@@ -436,7 +422,7 @@ async def list_models():
     return {
         "current_model": LLM_MODEL,
         "recommended_models": [
-            "llama3",
+            "llama3.2",
             "llama3:8b-instruct-q4_K_M",
             "phi3:mini",
             "gemma:2b",
@@ -444,20 +430,17 @@ async def list_models():
         ]
     }
 
+
 @app.get("/api/download-image")
-async def download_image(url: str, request: ContentRequest):
-    """
-    Proxies an image download to bypass CORS.
-    """
+async def download_image(url: str):
+    """Proxies an image download to bypass CORS"""
     if not url:
         raise HTTPException(status_code=400, detail="No URL provided")
 
     try:
         async with httpx.AsyncClient() as client:
-            # Stream the request to the external URL
-            response = await client.stream("GET", url, headers={"User-Agent": request.headers.get("User-Agent", "FastAPI-Proxy")})
+            response = await client.get(url, headers={"User-Agent": "FastAPI-Proxy"})
             
-            # Check if the response is successful and an image
             if response.status_code != 200:
                 raise HTTPException(status_code=response.status_code, detail="Failed to fetch image")
             
@@ -465,17 +448,94 @@ async def download_image(url: str, request: ContentRequest):
             if not content_type.startswith("image/"):
                 raise HTTPException(status_code=400, detail="URL does not point to a valid image")
 
-            # Get filename from URL
             filename = url.split('/')[-1].split('?')[0] or "image.jpg"
             
             return StreamingResponse(
-                response.aiter_bytes(), 
+                iter([response.content]), 
                 media_type=content_type,
                 headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
             )
 
     except httpx.RequestError as e:
         raise HTTPException(status_code=500, detail=f"Error fetching image: {e}")
+
+
+@app.get("/auth/google/login")
+async def google_login():
+    """Initiate Google OAuth flow"""
+    scope = "https://www.googleapis.com/auth/blogger"
+
+    url = (
+        "https://accounts.google.com/o/oauth2/v2/auth?"
+        f"client_id={GOOGLE_CLIENT_ID}&"
+        f"redirect_uri={urllib.parse.quote(GOOGLE_REDIRECT_URI)}&"
+        "response_type=code&"
+        f"scope={urllib.parse.quote(scope)}&"
+        "access_type=offline&"
+        "prompt=consent"
+    )
+
+    return {"login_url": url}
+
+
+@app.get("/auth/google/callback")
+async def google_callback(request: Request):
+    """Handle Google OAuth callback"""
+    code = request.query_params.get("code")
+    token_url = "https://oauth2.googleapis.com/token"
+
+    data = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(token_url, data=data)
+        token_info = r.json()
+
+    frontend_redirect = f"http://localhost:5500/index.html#token={token_info.get('access_token')}"
+    return RedirectResponse(frontend_redirect)
+
+
+@app.post("/api/publish/blogger")
+async def publish_blogger_post(request: BloggerPublishRequest):
+    """Publish a post to Blogger"""
+    blog_id = BLOGGER_BLOG_ID
+    
+    if not blog_id:
+        return {"status": "error", "message": "Blog ID not configured"}
+    
+    post_data = {
+        "kind": "blogger#post",
+        "blog": {"id": blog_id},
+        "title": request.title,
+        "content": request.content
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f'https://www.googleapis.com/blogger/v3/blogs/{blog_id}/posts',
+                headers={
+                    'Authorization': f'Bearer {request.access_token}',
+                    'Content-Type': 'application/json'
+                },
+                json=post_data
+            )
+        
+        if response.status_code == 200:
+            return {"status": "published", "result": response.json()}
+        else:
+            return {
+                "status": "error", 
+                "message": response.text, 
+                "status_code": response.status_code
+            }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 # -------------------------------
