@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Content Generator</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/html-docx-js@0.3.1/dist/html-docx.min.js"></script>
-    <link rel="stylesheet" href=style.css>
+    <script src="https://cdn.jsdelivr.net/npm/html-docx-js@0.3.1/dist/html-docx.min.js"></script>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
@@ -53,7 +53,6 @@
                     <div class="form-group">
                         <label>Web Search results (0 to disable)</label>
                         <input type="number" id="webSearch" value="0" min="0" max="10">
-
                     </div>
 
                     <button type="submit" class="btn btn-primary" id="generateBtn">
@@ -79,7 +78,7 @@
             <div class="card output-section">
                 <div class="output-tabs">
                     <div class="tab active" onclick="switchTab('search')">Search Results</div>
-                    <div class="tab " onclick="switchTab('strategy')">Strategy</div>
+                    <div class="tab" onclick="switchTab('strategy')">Strategy</div>
                     <div class="tab" onclick="switchTab('content')">Content</div>
                     <div class="tab" onclick="switchTab('review')">Review</div>
                 </div>
@@ -96,19 +95,57 @@
                     </div>
                 </div>
 
+                <div id="tab-review" class="tab-content">
+                    <div class="markdown-content" id="reviewOutput">
+                        <p style="color: #999;">Review will appear here...</p>
+                    </div>
+                </div>
+                            
                 <div id="tab-content" class="tab-content">
                     <div class="markdown-content" id="contentOutput">
                         <p style="color: #999;">Generated content will appear here...</p>
                     </div>
-                    <button class="btn btn-secondary" onclick="downloadDocx()" style="margin-top: 20px;">
-                Download as .docx
-            </button>
-                </div>
 
-                <div id="tab-review" class="tab-content">
-                    <div id="reviewOutput">
-                        <p style="color: #999;">Review results will appear here...</p>
+                    <button class="btn btn-secondary" onclick="downloadDocx()" style="margin-top: 20px;">
+                        Download as .docx
+                    </button>
+                    <div class="platform-select-wrapper" style="margin-top: 10px;">
+                        <img id="platformIcon" class="platform-icon"
+                            src="https://cdn-icons-png.flaticon.com/512/888/888853.png">
+
+                        <select id="publishPlatform" class="btn btn-secondary"
+                                onchange="updatePlatformIcon()">
+                            <option value="" disabled selected>Select Platform</option>
+
+                            <option value="blogger"
+                                    data-icon="https://cdn-icons-png.flaticon.com/512/888/888853.png">
+                                Blogger
+                            </option>
+
+                            <option value="medium" disabled
+                                    data-icon="https://cdn-icons-png.flaticon.com/512/5968/5968804.png">
+                                Medium (coming soon)
+                            </option>
+
+                            <option value="linkedin" disabled
+                                    data-icon="https://cdn-icons-png.flaticon.com/512/3536/3536505.png">
+                                LinkedIn (coming soon)
+                            </option>
+                        </select>
                     </div>
+                    <!-- Publish Button -->
+                    <button class="btn btn-primary" onclick="publishSelectedPlatform()" style="margin-top: 10px;">
+                        Publish
+                    </button>
+                    <!-- View Published Post -->
+                    <button id="viewPostBtn" class="btn btn-small" style="margin-top: 10px; display:none;">
+                        View Published Post
+                    </button>
+
+                    <!-- Google OAuth -->
+                    <button class="btn btn-small" onclick="googleLogin()" style="margin-top: 10px;">
+                        Connect Google
+                    </button>
                 </div>
             </div>
         </div>
@@ -118,9 +155,61 @@
         const API_BASE = 'http://localhost:8000';
         let keywords = [];
 
+        // Wait for DOM to be fully loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            // 1. Restore saved draft
+            const savedDraft = localStorage.getItem("draft_content");
+            if (savedDraft) {
+                const contentOutput = document.getElementById("contentOutput");
+                if (contentOutput) {
+                    contentOutput.innerHTML = marked.parse(savedDraft);
+                }
+            }
+
+            // 2. Restore "View Published Post" button
+            const postUrl = sessionStorage.getItem("latest_blogger_post");
+            if (postUrl) {
+                const btn = document.getElementById("viewPostBtn");
+                if (btn) {
+                    btn.style.display = "inline-block";
+                    btn.onclick = () => window.open(postUrl, "_blank");
+                }
+            }
+
+            // 3. Capture Google OAuth token
+            if (window.location.hash.startsWith("#token=")) {
+                const token = window.location.hash.replace("#token=", "");
+                sessionStorage.setItem('google_token', token);
+                history.replaceState(null, "", window.location.pathname);
+                alert("Google Connected Successfully!");
+            }
+
+            // 4. Set up form submission
+            const contentForm = document.getElementById('contentForm');
+            if (contentForm) {
+                contentForm.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    generateContentStream();
+                });
+            }
+
+            // 5. Enter key on keyword input
+            const keywordInput = document.getElementById('keywordInput');
+            if (keywordInput) {
+                keywordInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        addKeyword();
+                    }
+                });
+            }
+        });
+
         // Keyword management
         function addKeyword() {
             const input = document.getElementById('keywordInput');
+            if (!input) return;
+            
             const keyword = input.value.trim();
             if (keyword && !keywords.includes(keyword)) {
                 keywords.push(keyword);
@@ -136,6 +225,8 @@
 
         function renderKeywords() {
             const list = document.getElementById('keywordsList');
+            if (!list) return;
+            
             list.innerHTML = keywords.map(k => `
                 <span class="keyword-tag">
                     ${k}
@@ -144,45 +235,52 @@
             `).join('');
         }
 
-// ...after renderKeywords()
+        function downloadDocx() {
+            const contentOutput = document.getElementById('contentOutput');
+            const briefInput = document.getElementById('brief');
+            
+            if (!contentOutput) return;
+            
+            const contentHtml = contentOutput.innerHTML;
+            const filename = (briefInput ? briefInput.value : 'content-draft')
+                .replace(/[^a-z0-9]/gi, '_').toLowerCase()
+                .substring(0, 30);
 
-    function downloadDocx() {
-        const contentHtml = document.getElementById('contentOutput').innerHTML;
-        // Sanitize the project brief to use as a filename
-        const filename = (document.getElementById('brief').value || 'content-draft')
-            .replace(/[^a-z0-9]/gi, '_').toLowerCase()
-            .substring(0, 30);
+            const blob = htmlDocx.asBlob(contentHtml);
+            saveAs(blob, `${filename}.docx`);
+        }
 
-        const blob = htmlDocx.asBlob(contentHtml);
-        saveAs(blob, `${filename}.docx`);
-    }
+        function saveAs(blob, filename) {
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
 
-    // Helper function (needed by html-to-docx)
-    function saveAs(blob, filename) {
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-    }
-
-        // Tab switching
         function switchTab(tabName) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             
             event.target.classList.add('active');
-            document.getElementById(`tab-${tabName}`).classList.add('active');
+            const targetTab = document.getElementById(`tab-${tabName}`);
+            if (targetTab) {
+                targetTab.classList.add('active');
+            }
         }
 
-        // Progress management
         function updateProgress(progress, stage) {
-            document.getElementById('progressFill').style.width = `${progress}%`;
+            const progressFill = document.getElementById('progressFill');
+            if (progressFill) {
+                progressFill.style.width = `${progress}%`;
+            }
             
             const stages = ['search', 'strategy', 'writing', 'review', 'complete'];
             stages.forEach(s => {
                 const el = document.getElementById(`stage-${s}`);
+                if (!el) return;
+                
                 el.classList.remove('active', 'completed');
                 
                 if (s === stage) {
@@ -193,12 +291,11 @@
             });
         }
 
-        // Streaming content generation
         async function generateContentStream() {
-            const brief = document.getElementById('brief').value;
-            const audience = document.getElementById('audience').value;
-            const tone = document.getElementById('tone').value;
-            const webSearch = document.getElementById('webSearch').valueAsNumber || 0; 
+            const brief = document.getElementById('brief')?.value;
+            const audience = document.getElementById('audience')?.value;
+            const tone = document.getElementById('tone')?.value;
+            const webSearch = document.getElementById('webSearch')?.valueAsNumber || 0;
 
             if (!brief) {
                 alert('Please enter a project brief');
@@ -208,9 +305,11 @@
             const progressSection = document.getElementById('progressSection');
             const generateBtn = document.getElementById('generateBtn');
             
-            progressSection.style.display = 'block';
-            generateBtn.disabled = true;
-            generateBtn.textContent = 'Generating...';
+            if (progressSection) progressSection.style.display = 'block';
+            if (generateBtn) {
+                generateBtn.disabled = true;
+                generateBtn.textContent = 'Generating...';
+            }
 
             try {
                 const response = await fetch(`${API_BASE}/api/stream`, {
@@ -222,8 +321,6 @@
                         tone: tone,
                         keywords: keywords,
                         web_search: webSearch
-
-                        // The key is web_search with an underscore to match your Python ContentRequest model.
                     })
                 });
 
@@ -246,11 +343,15 @@
                 }
             } catch (error) {
                 console.error('Error:', error);
-                document.getElementById('contentOutput').innerHTML = 
-                    `<div class="error">Error: ${error.message}</div>`;
+                const contentOutput = document.getElementById('contentOutput');
+                if (contentOutput) {
+                    contentOutput.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+                }
             } finally {
-                generateBtn.disabled = false;
-                generateBtn.textContent = 'Generate Content';
+                if (generateBtn) {
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = 'Generate Content';
+                }
             }
         }
 
@@ -259,61 +360,64 @@
             updateProgress(progress, stage);
 
             switch (stage) {
-
                 case 'search':
-                // Check if content is the Tavily results object
-                if (typeof content === 'object' && content !== null && !Array.isArray(content) && content.results) {
-                    const results = content.results || [];
-                    const images = content.images || [];
+                    const searchOutput = document.getElementById('searchOutput');
+                    if (!searchOutput) break;
                     
-                    let htmlContent = '<h2>Web Search Results</h2>';
+                    if (typeof content === 'object' && content !== null && !Array.isArray(content) && content.results) {
+                        const results = content.results || [];
+                        const images = content.images || [];
+                        
+                        let htmlContent = '<h2>Web Search Results</h2>';
 
-                    // Display Images first
-                    if (images.length > 0) {
-                        htmlContent += '<h3>Images (Click to resize)</h3><div class="image-gallery">';
-                        htmlContent += images.map(img_url => `
-                            <div class="image-container">
-                                <img src="${img_url}" alt="Search Result Image" class="search-image" onclick="toggleFullscreen(this)">
-                                <a href="/api/download-image?url=${encodeURIComponent(img_url)}" class="download-btn">Download</a>
-                            </div>
-                        `).join('');
-                        htmlContent += '</div>';
-                    }
+                        if (images.length > 0) {
+                            htmlContent += '<h3>Images (Click to resize)</h3><div class="image-gallery">';
+                            htmlContent += images.map(img_url => `
+                                <div class="image-container">
+                                    <img src="${img_url}" alt="Search Result Image" class="search-image" onclick="toggleFullscreen(this)">
+                                    <a href="/api/download-image?url=${encodeURIComponent(img_url)}" class="download-btn">Download</a>
+                                </div>
+                            `).join('');
+                            htmlContent += '</div>';
+                        }
 
-                    // Display Text Results
-                    htmlContent += '<h3>Sources</h3>';
-                    if (results.length === 0) {
-                        htmlContent += '<p>No text results found.</p>';
-                    } else {
-                        htmlContent += results.map(result => `
-                            <div class="search-result-card">
-                                <h4><a href="${result.url}" target="_blank">${result.title}</a></h4>
-                                <p>${result.content}</p>
-                            </div>
-                        `).join('');
+                        htmlContent += '<h3>Sources</h3>';
+                        if (results.length === 0) {
+                            htmlContent += '<p>No text results found.</p>';
+                        } else {
+                            htmlContent += results.map(result => `
+                                <div class="search-result-card">
+                                    <h4><a href="${result.url}" target="_blank">${result.title}</a></h4>
+                                    <p>${result.content}</p>
+                                </div>
+                            `).join('');
+                        }
+                        searchOutput.innerHTML = htmlContent;
+                    } else if (content === 'Searching the web...') {
+                        searchOutput.innerHTML = '<p>Searching...</p>';
                     }
-                    document.getElementById('searchOutput').innerHTML = htmlContent;
-                } else if (content === 'Searching the web...') {
-                    document.getElementById('searchOutput').innerHTML = '<p>Searching...</p>';
-                }
-                break;
+                    break;
 
                 case 'strategy':
-                    if (content !== 'Generating strategy...') {
-                        document.getElementById('strategyOutput').innerHTML = marked.parse(content);
+                    const strategyOutput = document.getElementById('strategyOutput');
+                    if (strategyOutput && content !== 'Generating strategy...') {
+                        strategyOutput.innerHTML = marked.parse(content);
                     }
                     break;
                 
                 case 'writing':
-                    if (content !== 'Writing content...') {
-                        document.getElementById('contentOutput').innerHTML = marked.parse(content);
+                    const contentOutput = document.getElementById('contentOutput');
+                    if (contentOutput && content !== 'Writing content...') {
+                        contentOutput.innerHTML = marked.parse(content);
+                        localStorage.setItem("draft_content", content);
                     }
                     break;
                 
                 case 'review':
-                    if (content !== 'Reviewing content...') {
+                    const reviewOutput = document.getElementById('reviewOutput');
+                    if (reviewOutput && content !== 'Reviewing content...') {
                         const reviewData = JSON.parse(content);
-                        document.getElementById('reviewOutput').innerHTML = `
+                        reviewOutput.innerHTML = `
                             <div class="review-card">
                                 <h3>Quality Assessment</h3>
                                 <div class="score">${reviewData.score}/10</div>
@@ -332,26 +436,136 @@
             }
         }
 
-        // Form submission
-        document.getElementById('contentForm').addEventListener('submit', (e) => {
-            e.preventDefault();
-            generateContentStream();
-        });
-
-        // Enter key on keyword input
-        document.getElementById('keywordInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                addKeyword();
+        function toggleFullscreen(img) {
+            if (img) {
+                img.classList.toggle('fullscreen');
             }
-        });
+        }
 
-        // ... after your other JS functions ...
+        async function googleLogin() {
+            const confirmLogin = confirm(
+                "⚠️ Warning: Connecting Google will refresh the page and your generated content may be lost. Continue?"
+            );
 
-    function toggleFullscreen(img) {
-        img.classList.toggle('fullscreen');
-    }
-    
+            if (!confirmLogin) return;
+
+            const res = await fetch(`${API_BASE}/auth/google/login`);
+            const data = await res.json();
+
+            window.location.href = data.login_url;
+        }
+
+        function publishSelectedPlatform() {
+            const platformSelect = document.getElementById("publishPlatform");
+            if (!platformSelect) return;
+            
+            const platform = platformSelect.value;
+
+            if (!platform) {
+                alert("Please select a platform.");
+                return;
+            }
+
+            if (platform === "blogger") {
+                publishToBlogger();
+            } else {
+                alert(platform + " publishing is coming soon!");
+            }
+        }
+
+        // NEW — update icon when platform changes
+            function updatePlatformIcon() {
+                const select = document.getElementById("publishPlatform");
+                const icon = document.getElementById("platformIcon");
+
+                const option = select.options[select.selectedIndex];
+                const iconUrl = option.getAttribute("data-icon");
+
+                if (iconUrl) {
+                    icon.src = iconUrl;
+                }
+            }
+
+        async function publishToBlogger() {
+            const contentOutput = document.getElementById("contentOutput");
+            const briefInput = document.getElementById("brief");
+            
+            if (!contentOutput) return;
+            
+            const rawMarkdown = contentOutput.textContent;
+            const convertedHtml = marked.parse(rawMarkdown);
+            const wrappedContent = `<div>${convertedHtml}</div>`;
+            
+            // Extract title from the generated content
+            let title = "AI Generated Content";
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = convertedHtml;
+            
+            // Try to find the first H1 or H2
+            const firstHeading = tempDiv.querySelector('h1, h2');
+            if (firstHeading) {
+                title = firstHeading.textContent.trim();
+            } else {
+                // Fallback: Look for first strong/bold text or first sentence
+                const firstStrong = tempDiv.querySelector('strong');
+                if (firstStrong && firstStrong.textContent.length < 100) {
+                    title = firstStrong.textContent.trim();
+                } else {
+                    // Extract first sentence from raw markdown
+                    const firstLine = rawMarkdown.split('\n').find(line => line.trim().length > 10);
+                    if (firstLine) {
+                        // Remove markdown formatting
+                        title = firstLine.replace(/[#*_\[\]]/g, '').trim().substring(0, 100);
+                    } else if (briefInput && briefInput.value) {
+                        title = briefInput.value;
+                    }
+                }
+            }
+            
+            console.log("Extracted title:", title);
+
+            const googleAccessToken = sessionStorage.getItem('google_token');
+            if (!googleAccessToken) {
+                alert("Please connect your Google account first.");
+                return;
+            }
+
+            // Show publishing status
+            alert("Publishing to Blogger...");
+
+            try {
+                const res = await fetch(`${API_BASE}/api/publish/blogger`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        access_token: googleAccessToken,
+                        title,
+                        content: wrappedContent
+                    })
+                });
+
+                const data = await res.json();
+
+                if (data.status === "published") {
+                    const postUrl = data.result.url;
+
+                    sessionStorage.setItem("latest_blogger_post", postUrl);
+
+                    const btn = document.getElementById("viewPostBtn");
+                    if (btn) {
+                        btn.style.display = "inline-block";
+                        btn.onclick = () => window.open(postUrl, "_blank");
+                    }
+
+                    alert("✅ Published successfully!");
+                } else {
+                    alert("❌ Publishing failed:\n" + JSON.stringify(data));
+                }
+            } catch (error) {
+                alert("❌ Error: " + error.message);
+                console.error(error);
+            }
+        }
     </script>
 </body>
 </html>

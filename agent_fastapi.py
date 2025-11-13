@@ -2,16 +2,6 @@
 agent_fastapi.py
 -------------------
 FastAPI + LangGraph Content Creation Agent with Streaming Support
-
-Features:
-- REST API endpoints
-- Real-time streaming responses
-- Markdown formatted output
-- CORS enabled for frontend integration
-- Async processing
-- Tavily Web Search with Image Support
-
-Run: uvicorn agent_fastapi:app --reload --host 0.0.0.0 --port 8000
 """
 
 import dotenv
@@ -29,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from langchain_ollama import OllamaLLM
 from langchain_tavily import TavilySearch  # 1. IMPORT TAVILY
@@ -47,17 +37,24 @@ app = FastAPI(
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # -------------------------------
+# Environment Variables
+# -------------------------------
+LLM_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+BLOGGER_BLOG_ID = os.getenv("BLOGGER_BLOG_ID")
+
+# -------------------------------
 # LLM Setup
 # -------------------------------
-LLM_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
-
 llm = OllamaLLM(
     model=LLM_MODEL,
     temperature=0.1,
@@ -71,13 +68,13 @@ llm_writer = OllamaLLM(
     model=LLM_MODEL,
     temperature=0.2,
     num_predict=1024,
-    num_ctx=4096,  # Increased context for search results
+    num_ctx=4096,
     top_p=0.9,
     top_k=40
 )
 
 # -------------------------------
-# Pydantic Models (Request/Response)
+# Pydantic Models
 # -------------------------------
 class ContentRequest(BaseModel):
     project_brief: str = Field(..., description="Brief description of the content project")
@@ -101,6 +98,11 @@ class StreamUpdate(BaseModel):
     content: str
     progress: int
 
+class BloggerPublishRequest(BaseModel):
+    access_token: str
+    title: str
+    content: str
+
 # -------------------------------
 # State Schema
 # -------------------------------
@@ -119,7 +121,7 @@ class ContentState(TypedDict, total=False):
     final_content: str
 
 # -------------------------------
-# Agent Nodes (Async versions)
+# Agent Nodes
 # -------------------------------
 
 async def web_search_async(state: ContentState) -> ContentState:
@@ -132,7 +134,6 @@ async def web_search_async(state: ContentState) -> ContentState:
 
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
-        # Instantiate TavilySearch, including images
         search_tool = TavilySearch(max_results=max_results, include_images=True)
         try:
             results = await loop.run_in_executor(
@@ -343,10 +344,7 @@ async def health_check():
 
 @app.post("/api/generate", response_model=ContentResponse)
 async def generate_content(request: ContentRequest):
-    """
-    Generate content (non-streaming)
-    Returns complete result when finished
-    """
+    """Generate content (non-streaming)"""
     try:
         input_data = {
             "project_brief": request.project_brief,
@@ -374,10 +372,7 @@ async def generate_content(request: ContentRequest):
 
 @app.post("/api/stream")
 async def stream_content(request: ContentRequest):
-    """
-    Stream content generation in real-time
-    Returns Server-Sent Events (SSE)
-    """
+    """Stream content generation in real-time"""
     async def generate_stream():
         try:
             input_data = {
@@ -435,7 +430,7 @@ async def list_models():
     return {
         "current_model": LLM_MODEL,
         "recommended_models": [
-            "llama3",
+            "llama3.2",
             "llama3:8b-instruct-q4_K_M",
             "phi3:mini",
             "gemma:2b",
@@ -473,6 +468,84 @@ async def download_image(url: str, request: Request):
 
     except httpx.RequestError as e:
         raise HTTPException(status_code=500, detail=f"Error fetching image: {e}")
+
+
+@app.get("/auth/google/login")
+async def google_login():
+    """Initiate Google OAuth flow"""
+    scope = "https://www.googleapis.com/auth/blogger"
+
+    url = (
+        "https://accounts.google.com/o/oauth2/v2/auth?"
+        f"client_id={GOOGLE_CLIENT_ID}&"
+        f"redirect_uri={urllib.parse.quote(GOOGLE_REDIRECT_URI)}&"
+        "response_type=code&"
+        f"scope={urllib.parse.quote(scope)}&"
+        "access_type=offline&"
+        "prompt=consent"
+    )
+
+    return {"login_url": url}
+
+
+@app.get("/auth/google/callback")
+async def google_callback(request: Request):
+    """Handle Google OAuth callback"""
+    code = request.query_params.get("code")
+    token_url = "https://oauth2.googleapis.com/token"
+
+    data = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(token_url, data=data)
+        token_info = r.json()
+
+    frontend_redirect = f"http://localhost:5500/index.html#token={token_info.get('access_token')}"
+    return RedirectResponse(frontend_redirect)
+
+
+@app.post("/api/publish/blogger")
+async def publish_blogger_post(request: BloggerPublishRequest):
+    """Publish a post to Blogger"""
+    blog_id = BLOGGER_BLOG_ID
+    
+    if not blog_id:
+        return {"status": "error", "message": "Blog ID not configured"}
+    
+    post_data = {
+        "kind": "blogger#post",
+        "blog": {"id": blog_id},
+        "title": request.title,
+        "content": request.content
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f'https://www.googleapis.com/blogger/v3/blogs/{blog_id}/posts',
+                headers={
+                    'Authorization': f'Bearer {request.access_token}',
+                    'Content-Type': 'application/json'
+                },
+                json=post_data
+            )
+        
+        if response.status_code == 200:
+            return {"status": "published", "result": response.json()}
+        else:
+            return {
+                "status": "error", 
+                "message": response.text, 
+                "status_code": response.status_code
+            }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 # -------------------------------

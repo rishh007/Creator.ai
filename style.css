@@ -372,19 +372,6 @@
     opacity: 1;
 }
 
-/* --- New Button Style --- */
-
-.btn-secondary {
-    background: #3b7eb9;
-    color: white;
-}
-
-.btn-secondary:hover {
-    background: #0f411f;
-}
-
-/* --- Existing Search Result Card --- */
-
 .search-result-card {
     background: #f9fafb;
     border: 1px solid #e0e0e0;
