@@ -145,6 +145,7 @@ async def web_search_async(state: ContentState) -> ContentState:
             results = await loop.run_in_executor(
                 executor,
                 search_tool.invoke,
+                
                 state.get("project_brief")
             )
             state["search_results"] = results
