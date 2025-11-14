@@ -18,6 +18,7 @@ import dotenv
 dotenv.load_dotenv()  # very important.
 
 import httpx
+# from docx import Document
 import base64
 import os
 import json
@@ -26,7 +27,7 @@ import asyncio
 import io
 import base64
 import resend
-from docx import Document
+# from docx import Document
 from bs4 import BeautifulSoup
 from typing import TypedDict, List, Dict, Any, Optional
 from datetime import datetime
@@ -66,8 +67,8 @@ LLM_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 llm = OllamaLLM(
     model=LLM_MODEL,
     temperature=0.1,
-    num_predict=512,
-    num_ctx=2048,
+    num_predict=256,
+    num_ctx=1024,
     top_p=0.9,
     top_k=40
 )
@@ -75,8 +76,8 @@ llm = OllamaLLM(
 llm_writer = OllamaLLM(
     model=LLM_MODEL,
     temperature=0.2,
-    num_predict=1024,
-    num_ctx=4096,  # Increased context for search results
+    num_predict=256,
+    num_ctx=1024,  # Increased context for search results
     top_p=0.9,
     top_k=40
 )
@@ -644,6 +645,28 @@ async def list_models():
         ]
     }
 
+# <<<<<<<<< Temporary merge branch 1
+@app.post("/api/send-email")
+async def send_email_endpoint(request: dict):
+    """
+    Send generated content via email
+    """
+    try:
+        recipient_email = request.get("email")
+        docx_base64 = request.get("docx_base64")  # Pre-generated DOCX from frontend
+        project_brief = request.get("project_brief", "Generated Content")
+        
+        if not recipient_email or not docx_base64:
+            raise HTTPException(status_code=400, detail="Email and DOCX content are required")
+        
+        await send_content_email_with_docx(recipient_email, docx_base64, project_brief)
+        
+        return {"status": "success", "message": "Email sent successfully!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+
+# =========
+# >>>>>>>>> Temporary merge branch 2
 
 @app.get("/api/download-image")
 async def download_image(url: str, request: Request):
