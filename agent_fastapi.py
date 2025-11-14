@@ -18,7 +18,7 @@ import dotenv
 dotenv.load_dotenv()  # very important.
 
 import httpx
-from docx import Document
+# from docx import Document
 import base64
 import os
 import json
