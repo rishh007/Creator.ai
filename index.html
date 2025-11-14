@@ -13,6 +13,9 @@
         <header>
             <h1>🤖 Creator.ai - content creation team</h1>
             <p class="subtitle">Powered by LangGraph & Ollama</p>
+            <button class="btn btn-secondary" onclick="logout()" style="position: absolute; top: 20px; right: 20px; width: auto;">
+                Logout
+            </button>
         </header>
 
         <div class="main-grid">
@@ -28,6 +31,18 @@
                     <div class="form-group">
                         <label>Target Audience</label>
                         <input type="text" id="audience" placeholder="e.g., developers, marketers" value="general">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Content Type</label>
+                        <select id="contentType">
+                            <option value="blogger">Blogger (Article)</option>
+                            <option value="social_media">Social Media</option>
+                            <option value="copywriter">Copywriter</option>
+                            <option value="newsletter">Newsletter</option>
+                            <option value="podcaster">Podcaster</option>
+                            <option value="youtuber">YouTuber</option>
+                        </select>
                     </div>
 
                     <div class="form-group">
@@ -126,6 +141,15 @@
     <script>
         const API_BASE = 'http://localhost:8000';
         let keywords = [];
+        
+        // Check authentication on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            const token = localStorage.getItem('creator_token');
+            if (!token) {
+                window.location.href = 'login.html';
+                return;
+            }
+        });
 
         // Keyword management
         function addKeyword() {
@@ -207,6 +231,7 @@
             const brief = document.getElementById('brief').value;
             const audience = document.getElementById('audience').value;
             const tone = document.getElementById('tone').value;
+            const contentType = document.getElementById('contentType').value;
             const webSearch = document.getElementById('webSearch').valueAsNumber || 0;
             const authorEmail = document.getElementById('authorEmail').value; 
 
@@ -223,18 +248,26 @@
             generateBtn.textContent = 'Generating...';
 
             try {
+                const token = localStorage.getItem('creator_token');
+                if (!token) {
+                    window.location.href = 'login.html';
+                    return;
+                }
+                
                 const response = await fetch(`${API_BASE}/api/stream`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
                     body: JSON.stringify({
                         project_brief: brief,
                         audience: audience,
                         tone: tone,
+                        content_type: contentType,
                         keywords: keywords,
                         web_search: webSearch,
                         author_email: authorEmail
-
-                        // The key is web_search with an underscore to match your Python ContentRequest model.
                     })
                 });
 
@@ -422,6 +455,24 @@
         } catch (error) {
             alert(`❌ Error sending email: ${error.message}`);
         }
+    }
+    
+    // Logout function
+    async function logout() {
+        const token = localStorage.getItem('creator_token');
+        if (token) {
+            try {
+                await fetch(`${API_BASE}/api/logout`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token })
+                });
+            } catch (error) {
+                console.error('Logout error:', error);
+            }
+        }
+        localStorage.removeItem('creator_token');
+        window.location.href = 'login.html';
     }
     
     </script>

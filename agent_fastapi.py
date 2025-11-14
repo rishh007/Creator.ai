@@ -32,12 +32,13 @@ from typing import TypedDict, List, Dict, Any, Optional
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 from langchain_ollama import OllamaLLM
 from langchain_tavily import TavilySearch # 1. IMPORT TAVILY
+import secrets
 
 # -------------------------------
 # FastAPI App Setup
@@ -56,6 +57,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# -------------------------------
+# Authentication Setup
+# -------------------------------
+HARDCODED_USERS = {
+    "admin": "creator123",
+    "user": "password123"
+}
+
+active_tokens = set()
 
 # -------------------------------
 # LLM Setup
@@ -88,6 +99,7 @@ class ContentRequest(BaseModel):
     audience: str = Field(default="general", description="Target audience")
     tone: str = Field(default="informative", description="Content tone")
     keywords: List[str] = Field(default=[], description="Keywords to include")
+    content_type: str = Field(default="article", description="Type of content to generate")
     # 2. ADD WEB_SEARCH TO REQUEST MODEL
     web_search: int = Field(default=0, description="Number of web search results to include (0 to disable)")
     author_email: Optional[str] = Field(default=None, description="Author email for sending content")
@@ -107,6 +119,14 @@ class StreamUpdate(BaseModel):
     content: str
     progress: int
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginResponse(BaseModel):
+    token: str
+    message: str
+
 # -------------------------------
 # State Schema
 # -------------------------------
@@ -115,6 +135,7 @@ class ContentState(TypedDict, total=False):
     audience: str
     tone: str
     keywords: List[str]
+    content_type: str
     # 3. ADD WEB_SEARCH KEYS TO STATE
     web_search: int
     search_results: Optional[List[Dict[str, Any]]]
@@ -168,6 +189,7 @@ async def content_strategist_async(state: ContentState) -> ContentState:
     audience = state.get("audience", "general")
     tone = state.get("tone", "informative")
     keywords = ", ".join(state.get("keywords", []))
+    content_type = state.get("content_type", "article")
     
     # 5. UPDATE NODE TO USE SEARCH RESULTS
     search_results = state.get("search_results")
@@ -177,33 +199,32 @@ async def content_strategist_async(state: ContentState) -> ContentState:
         for i, result in enumerate(search_results.get('results', [])): # bug 
             search_context += f"Source {i+1} ({result.get('url')}):\n{result.get('content')}\n\n"
 
-    prompt = f"""You are a content strategist. Use the following web search context to inform your strategy.
+    prompt = f"""You are an advanced Content Strategist Agent.  
+Your task is to analyze the brief, audience, tone, keywords, content_type, and optional web search context to produce a complete, structured strategy.
 
 {search_context}
 
 ---
-Create a brief content strategy in markdown format based on the context and the user's request:
 
-**Brief:** {brief}
-**Audience:** {audience}
-**Tone:** {tone}
-**Keywords:** {keywords}
+# INPUT DETAILS
+**Content Type:** {content_type}  
+**Topic / Brief:** {brief}  
+**Audience:** {audience}  
+**Tone:** {tone}  
+**Keywords:** {keywords}  
 
-Output format:
-## Content Strategy
-### Main Sections (3-5)
-- Section 1
-- Section 2
+---
 
-### Key Angles (3)
-1. Angle 1
-2. Angle 2
+# GLOBAL STRATEGY RULES
+You MUST follow these rules regardless of content_type:
 
-### Style Notes
-- Note 1
-- Note 2
+1. Produce a deeply structured, multi-layered strategy.
+2. Use clear sections with markdown headings.
+3. Make decisions — do NOT be vague.
+4. Integrate insights from web search ONLY if relevant.
+5. Tailor everything to the selected content_type.
 
-Be concise."""
+---"""
 
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
@@ -218,6 +239,7 @@ async def content_writer_async(state: ContentState) -> ContentState:
     strategy = state.get("strategy", "")
     tone = state.get("tone", "informative")
     keywords = ", ".join(state.get("keywords", []))
+    content_type = state.get("content_type", "article")
 
     # 6. UPDATE NODE TO USE SEARCH RESULTS AND IMAGES
     search_results = state.get("search_results")
@@ -229,24 +251,133 @@ async def content_writer_async(state: ContentState) -> ContentState:
             if result.get('images'):
                  search_context += f"Images for Source {i+1}: {', '.join(result.get('images'))}\n\n"
 
-    prompt = f"""You are a content writer. Write a complete article in markdown format. 
-Follow this strategy and use the provided search context.
+    prompt = f"""You are a Senior Content Writer Agent.  
+Your task is to convert the strategist_output into fully finished content based on the selected content_type.
 
+# STRATEGIST OUTPUT (REFERENCE)
 {strategy}
 
 ---
+
+# SEARCH CONTEXT (REFERENCE)
 {search_context}
+
 ---
 
-**Tone:** {tone}
-**Keywords:** {keywords}
+# INPUT DETAILS
+**Content Type:** {content_type}  
+**Tone:** {tone}  
+**Keywords:** {keywords}  
 
-**Instructions:**
-- Write the complete article with clear headings (##, ###), paragraphs, and bullet points.
-- **IMPORTANT:** Where relevant, include images from the 'Web Search Context' using Markdown format: `![alt text](image_url)`
-- Be comprehensive and informative.
+---
 
-Start writing now:"""
+# GLOBAL WRITING RULES
+1. Follow strategist_output EXACTLY.  
+2. Maintain the specified tone throughout.  
+3. Expand ideas with clarity, depth, and logical progression.  
+4. Use markdown headings (##, ###) where appropriate.  
+5. Use examples, reasoning, and explanation where beneficial.  
+6. Integrate keywords naturally.  
+7. If images exist in search context, embed where relevant:  
+   `![alt text](image_url)`  
+8. Return ONLY the final content — do NOT add commentary.
+
+---
+
+# CONTENT-TYPE–SPECIFIC WRITING BEHAVIOR
+
+## If content_type == "blogger"
+Write:
+### Full Markdown Article
+- H1 Title  
+- 4–7 H2 sections  
+- Optional H3 subsections  
+- Detailed paragraphs  
+- Examples, data, insights  
+
+### Include:
+- Smooth transitions  
+- Data-backed reasoning  
+- Optional images (if found)  
+
+---
+
+## If content_type == "social_media"
+Write:
+### 2–3 Post Variations
+Each variation must include:
+- Strong hook  
+- Body  
+- CTA  
+
+Platform rules must be followed:
+- Twitter/X → concise  
+- Instagram → spacing + emphasis  
+- LinkedIn → structured insights  
+
+---
+
+## If content_type == "copywriter"
+Write:
+### Ad Copy
+- Short (1–2 lines)  
+- Medium (3–5 lines)  
+- Long (paragraph style)
+
+### Landing Page Section
+- Hero line  
+- Subheadline  
+- CTA
+
+### Optional:
+- 6–10 taglines  
+
+---
+
+## If content_type == "newsletter"
+Write:
+### Complete Newsletter
+- Warm intro  
+- Main narrative  
+- Insight section  
+- Closing message  
+- CTA or forward prompt  
+
+Tone: conversational, editorial, clear.  
+
+---
+
+## If content_type == "podcaster"
+Write:
+### Full Podcast Script
+- Opening lines  
+- Segment-by-segment script  
+- Natural spoken flow  
+- Pacing cues  
+- For interviews:  
+  - Host questions  
+  - Follow-ups  
+
+---
+
+## If content_type == "youtuber"
+Write:
+### Complete YouTube Script
+- Hook  
+- Scene-by-scene script  
+- On-screen text suggestions  
+- B-roll cues  
+- Strong outro  
+
+Keep sentences punchy and spoken-language friendly.  
+
+---
+
+# OUTPUT FORMAT (MANDATORY)
+Return ONLY:
+
+## Writer Output
+<final polished content here>"""
 
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
@@ -259,17 +390,77 @@ Start writing now:"""
 async def content_reviewer_async(state: ContentState) -> ContentState:
     """Review content quality"""
     draft = state.get("draft_content", "")
+    tone = state.get("tone", "informative")
+    keywords = ", ".join(state.get("keywords", []))
+    
     if not draft:
         state["quality_score"] = 0.0
         state["reviewer_comments"] = "No draft to review."
         state["needs_escalation"] = True
         return state
 
-    prompt = f"""Review this draft. Output only JSON:
+    prompt = f"""You are a Senior Content Quality Reviewer Agent.  
+Your task is to evaluate the draft content rigorously and return ONLY a JSON object.
 
-{draft[:1000]}...
+# DRAFT UNDER REVIEW (TRUNCATED)
+{draft[:2000]}
 
-{{"score": <0-10>, "comments": "<brief feedback>"}}"""
+---
+
+# REVIEW CRITERIA
+Evaluate the content against the following:
+
+## 1. Structural Quality
+- Does it follow strategist_output?
+- Is the format correct for the content_type?
+- Is the flow logical?
+
+## 2. Clarity & Readability
+- Straightforward sentences?
+- Easy to follow?
+
+## 3. Depth & Completeness
+- Key points fully developed?
+- Missing sections?
+
+## 4. Tone Alignment
+Compare against:  
+Tone specified → {tone}  
+
+## 5. Keyword Usage
+Check natural inclusion of:  
+{keywords}
+
+## 6. Suitability for Content Type
+Specific expectations:
+- Blogger → full article with structure  
+- Social media → concise, hook-based  
+- Copywriter → persuasion-first  
+- Newsletter → editorial clarity  
+- Podcaster → spoken flow  
+- Youtuber → script + cues  
+
+---
+
+# SCORE RULES
+- 9–10 = Excellent  
+- 7–8 = Good  
+- 6 = Acceptable but needs light polishing  
+- <6 = Needs Escalation (fail)
+
+---
+
+# OUTPUT FORMAT (STRICT)
+Return ONLY this JSON object:
+
+{{
+  "score": <number 0–10>,
+  "comments": "<specific, actionable feedback>"
+}}
+
+NO text outside the JSON.  
+NO explanations.  
+NO markdown."""
 
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
@@ -513,8 +704,33 @@ async def run_content_pipeline_async(input_data: dict) -> dict:
 
 
 # -------------------------------
+# Authentication Functions
+# -------------------------------
+def verify_token(token: str) -> bool:
+    return token in active_tokens
+
+def authenticate_user(username: str, password: str) -> bool:
+    return HARDCODED_USERS.get(username) == password
+
+# -------------------------------
 # API Endpoints
 # -------------------------------
+@app.post("/api/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    """Login endpoint with hardcoded credentials"""
+    if authenticate_user(request.username, request.password):
+        token = secrets.token_urlsafe(32)
+        active_tokens.add(token)
+        return LoginResponse(token=token, message="Login successful")
+    else:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+@app.post("/api/logout")
+async def logout(token: str):
+    """Logout endpoint"""
+    active_tokens.discard(token)
+    return {"message": "Logged out successfully"}
+
 @app.get("/")
 async def root():
     """Health check endpoint"""
@@ -541,17 +757,26 @@ async def health_check():
 
 
 @app.post("/api/generate", response_model=ContentResponse)
-async def generate_content(request: ContentRequest):
+async def generate_content(request: ContentRequest, authorization: str = Header(None)):
     """
     Generate content (non-streaming)
     Returns complete result when finished
     """
+    # Check authentication
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+    
+    token = authorization.split(" ")[1]
+    if not verify_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
     try:
         input_data = {
             "project_brief": request.project_brief,
             "audience": request.audience,
             "tone": request.tone,
             "keywords": request.keywords,
+            "content_type": request.content_type,
             # 8. PASS WEB_SEARCH PARAM FROM REQUEST
             "web_search": request.web_search
         }
@@ -573,11 +798,19 @@ async def generate_content(request: ContentRequest):
 
 
 @app.post("/api/stream")
-async def stream_content(request: ContentRequest):
+async def stream_content(request: ContentRequest, authorization: str = Header(None)):
     """
     Stream content generation in real-time
     Returns Server-Sent Events (SSE)
     """
+    # Check authentication
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+    
+    token = authorization.split(" ")[1]
+    if not verify_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
     async def generate_stream():
         try:
             input_data = {
@@ -585,6 +818,7 @@ async def stream_content(request: ContentRequest):
                 "audience": request.audience,
                 "tone": request.tone,
                 "keywords": request.keywords,
+                "content_type": request.content_type,
                 # 9. PASS WEB_SEARCH PARAM FROM REQUEST
                 "web_search": request.web_search
             }

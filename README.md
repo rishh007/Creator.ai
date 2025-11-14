@@ -40,7 +40,7 @@ pip install -r requirements.txt
 python agent_fastapi.py
 
 # Or using uvicorn directly:
-uvicorn agent_fastapi:app --reload --host 0.0.0.0 --port 8000
+
 ```
 
 The API will be available at:
