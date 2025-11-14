@@ -645,7 +645,7 @@ async def list_models():
         ]
     }
 
-<<<<<<<<< Temporary merge branch 1
+# <<<<<<<<< Temporary merge branch 1
 @app.post("/api/send-email")
 async def send_email_endpoint(request: dict):
     """
@@ -665,8 +665,8 @@ async def send_email_endpoint(request: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
 
-=========
->>>>>>>>> Temporary merge branch 2
+# =========
+# >>>>>>>>> Temporary merge branch 2
 
 @app.get("/api/download-image")
 async def download_image(url: str, request: Request):
